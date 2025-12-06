@@ -203,6 +203,7 @@
                 <option value="gate">🔓 Калитка — простая, очень быстро</option>
                 <option value="door">🚪 Дверь — средняя защита</option>
                 <option value="safe">🧊 Сейф — сложная, медленнее</option>
+                <option value="rock">🪨 Скала — вход только по ссылке</option>
             </select>
             <div id="modeInfo">
                 «Калитка» — один проход XOR-обфускации. Максимальная скорость, минимальная защита. Подходит для лёгкого скрытия от новичков.
@@ -246,7 +247,7 @@
 
 <script>
 (function() {
-    // Кодирование: UTF-8 → XOR-трансформация (в 3 режимах) → Base64
+    // Кодирование: UTF-8 → XOR-трансформация (в 4 режимах) → Base64
     function xorEncodeToBase64(text, pin, mode) {
         const encoder = new TextEncoder();
         let bytes = encoder.encode(text);
@@ -256,8 +257,8 @@
         let rounds;
         if (mode === 'door') {
             rounds = 5;     // "Дверь" — средняя
-        } else if (mode === 'safe') {
-            rounds = 12;    // "Сейф" — больше раундов, медленнее
+        } else if (mode === 'safe' || mode === 'rock') {
+            rounds = 12;    // "Сейф"/"Скала" — больше раундов, медленнее
         } else {
             rounds = 1;     // "Калитка" — самая простая, очень быстрая
         }
@@ -301,6 +302,9 @@
         } else if (mode === 'safe') {
             modeInfo.textContent =
                 '«Сейф» — много раундов XOR-обфускации с псевдо-перемешиванием. Расшифровка медленнее, но код сильнее запутан.';
+        } else if (mode === 'rock') {
+            modeInfo.textContent =
+                '«Скала» — обманка: ввод PIN на странице не работает даже при правильном коде. Вход возможен только по секретной ссылке с хэшем.';
         }
     }
     updateModeInfo();
@@ -366,7 +370,7 @@
         innerScriptLines.push('    var rounds;');
         innerScriptLines.push('    if (MODE === "door") {');
         innerScriptLines.push('      rounds = 5;');
-        innerScriptLines.push('    } else if (MODE === "safe") {');
+        innerScriptLines.push('    } else if (MODE === "safe" || MODE === "rock") {');
         innerScriptLines.push('      rounds = 12;');
         innerScriptLines.push('    } else {');
         innerScriptLines.push('      rounds = 1;');
@@ -439,10 +443,15 @@
         innerScriptLines.push('    inputs.forEach(function(el){ el.value = ""; });');
         innerScriptLines.push('    if (inputs.length) { inputs[0].focus(); }');
         innerScriptLines.push('  }');
-        innerScriptLines.push('  function tryUnlockCurrent(inputs, errorEl, loader, container, forcedPin) {');
-        innerScriptLines.push('    var pin = forcedPin != null ? forcedPin : getPin(inputs);');
+        innerScriptLines.push('  function tryUnlockCurrent(inputs, errorEl, loader, container, forcedPin, fromHash) {');
+        innerScriptLines.push('    var pin = (forcedPin != null) ? forcedPin : getPin(inputs);');
         innerScriptLines.push('    if (!isValidPin(pin)) {');
         innerScriptLines.push('      showError(errorEl, inputs, container, "PIN must be " + PIN_LEN + " digits.");');
+        innerScriptLines.push('      return;');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('    if (MODE === "rock" && !fromHash) {');
+        innerScriptLines.push('      showError(errorEl, inputs, container, decodeUtf8FromB64("0J3QtdCy0LXRgNC90YvQuSBQSU4="));'); // "Неверный PIN"
+        innerScriptLines.push('      resetInputs(inputs);');
         innerScriptLines.push('      return;');
         innerScriptLines.push('    }');
         innerScriptLines.push('    clearError(errorEl, inputs);');
@@ -485,7 +494,7 @@
         innerScriptLines.push('    for (var i = 0; i < inputs.length; i++) {');
         innerScriptLines.push('      inputs[i].value = pin.charAt(i) || "";');
         innerScriptLines.push('    }');
-        innerScriptLines.push('    tryUnlockCurrent(inputs, errorEl, loader, container, pin);');
+        innerScriptLines.push('    tryUnlockCurrent(inputs, errorEl, loader, container, pin, true);');
         innerScriptLines.push('  }');
 
         innerScriptLines.push('  var inputs = Array.prototype.slice.call(document.querySelectorAll(".pin-input"));');
@@ -502,7 +511,7 @@
         innerScriptLines.push('      }');
         innerScriptLines.push('      var pinNow = getPin(inputs);');
         innerScriptLines.push('      if (pinNow.length === inputs.length) {');
-        innerScriptLines.push('        tryUnlockCurrent(inputs, errorEl, loader, container);');
+        innerScriptLines.push('        tryUnlockCurrent(inputs, errorEl, loader, container, null, false);');
         innerScriptLines.push('      }');
         innerScriptLines.push('    });');
         innerScriptLines.push('    input.addEventListener("keydown", function(e){');
@@ -526,7 +535,7 @@
         innerScriptLines.push('      }');
         innerScriptLines.push('      var pinNow2 = getPin(inputs);');
         innerScriptLines.push('      if (pinNow2.length === inputs.length) {');
-        innerScriptLines.push('        tryUnlockCurrent(inputs, errorEl, loader, container);');
+        innerScriptLines.push('        tryUnlockCurrent(inputs, errorEl, loader, container, null, false);');
         innerScriptLines.push('      }');
         innerScriptLines.push('    });');
         innerScriptLines.push('  });');
