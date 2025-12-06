@@ -114,6 +114,33 @@
             color: #6b7280;
             margin-top: 10px;
         }
+        .hash-row {
+            margin-top: 14px;
+        }
+        .hash-input {
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+            font-size: 13px;
+            font-family: monospace;
+        }
+        .mode-row {
+            margin-top: 10px;
+        }
+        .mode-select {
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+            font-size: 13px;
+        }
+        #modeInfo {
+            font-size: 12px;
+            color: #4b5563;
+            margin-top: 6px;
+            line-height: 1.4;
+        }
         @media (max-width: 600px) {
             .row {
                 flex-direction: column;
@@ -130,7 +157,7 @@
 <div class="container">
     <h1>HTML + JS кодировщик с PIN</h1>
     <p class="small">
-        Введите исходный HTML/JS код и 4-значный PIN. Нажмите
+        Введите исходный HTML/JS код и PIN. Нажмите
         «Закодировать» — получите готовый самораспаковывающийся HTML-файл.
     </p>
 
@@ -151,14 +178,37 @@
 
     <div class="row">
         <div class="field">
-            <label for="pin">PIN-код (4 цифры)</label>
+            <label for="pin">PIN-код</label>
             <div class="password-wrapper">
-                <input id="pin" type="password" maxlength="4" inputmode="numeric" pattern="\d{4}"
+                <input id="pin" type="password" maxlength="8" inputmode="numeric"
                        placeholder="1234" />
                 <button type="button" id="togglePin" title="Показать/скрыть PIN">👁</button>
             </div>
             <div class="hint">PIN будет нужен для распаковки сгенерированного файла.</div>
         </div>
+
+        <div class="field mode-row">
+            <label for="pinLength">Длина PIN</label>
+            <select id="pinLength" class="mode-select">
+                <option value="4">4 цифры</option>
+                <option value="6">6 цифр</option>
+                <option value="8">8 цифр</option>
+            </select>
+            <div class="hint">Определяет количество ячеек ввода в защищённой странице.</div>
+        </div>
+
+        <div class="field mode-row">
+            <label for="mode">Тип защиты</label>
+            <select id="mode" class="mode-select">
+                <option value="gate">🔓 Калитка — простая, очень быстро</option>
+                <option value="door">🚪 Дверь — средняя защита</option>
+                <option value="safe">🧊 Сейф — сложная, медленнее</option>
+            </select>
+            <div id="modeInfo">
+                «Калитка» — один проход XOR-обфускации. Максимальная скорость, минимальная защита. Подходит для лёгкого скрытия от новичков.
+            </div>
+        </div>
+
         <div class="field" style="flex:0 0 auto;">
             <button class="main" id="encodeBtn">
                 🔐 Закодировать
@@ -170,289 +220,411 @@
         <label for="resultHtml">Сгенерированный защищённый HTML-файл</label>
         <textarea id="resultHtml" readonly placeholder="Здесь появится код готового HTML-файла."></textarea>
         <div style="margin-top: 8px;">
-            <button class="secondary" id="copyBtn" disabled>📋 Копировать в буфер</button>
+            <button class="secondary" id="copyBtn" disabled>📋 Копировать HTML</button>
             <button class="secondary" id="downloadBtn" disabled>💾 Скачать .html</button>
         </div>
+
+        <div class="hash-row">
+            <label for="pinHash">Хэш PIN для ссылки</label>
+            <input id="pinHash" class="hash-input" type="text" readonly
+                   placeholder="Появится после кодирования (формат: #k=...)" />
+            <div class="hint">
+                Добавьте этот хвост к URL защищённой страницы: <code>protected.html#k=...</code> —
+                по такой ссылке страница откроется без ввода PIN.
+            </div>
+            <div style="margin-top: 6px;">
+                <button class="secondary" id="copyHashBtn" disabled>🔗 Копировать хвост #k=...</button>
+            </div>
+        </div>
+
         <p class="small">
-            Важно: это простая кодировка (XOR+Base64). Она подходит только для лёгкого скрытия кода,
-            но не является криптографической защитой.
+            Важно: это простая кодировка (варианты XOR). Подходит только для лёгкого скрытия кода
+            и не является криптографической защитой.
         </p>
     </div>
 </div>
 
 <script>
-    // --- Вспомогательные функции кодирования/декодирования ---
-
-    function xorEncodeToBase64(text, pin) {
-        // text -> UTF-8 bytes
+(function() {
+    // Кодирование: UTF-8 → XOR-трансформация (в 3 режимах) → Base64
+    function xorEncodeToBase64(text, pin, mode) {
         const encoder = new TextEncoder();
-        const data = encoder.encode(text);
-        const key = pin;
-        const out = new Uint8Array(data.length);
+        let bytes = encoder.encode(text);
+        const key = pin || '0';
+        const keyLen = key.length || 1;
 
-        for (let i = 0; i < data.length; i++) {
-            const k = key.charCodeAt(i % key.length);
-            out[i] = data[i] ^ k;
+        let rounds;
+        if (mode === 'door') {
+            rounds = 5;     // "Дверь" — средняя
+        } else if (mode === 'safe') {
+            rounds = 12;    // "Сейф" — больше раундов, медленнее
+        } else {
+            rounds = 1;     // "Калитка" — самая простая, очень быстрая
         }
 
-        // bytes -> binary string -> base64
+        for (let r = 0; r < rounds; r++) {
+            for (let i = 0; i < bytes.length; i++) {
+                const k = key.charCodeAt((i + r) % keyLen);
+                const mix = (i * 31 + r * 17) & 0xff;
+                bytes[i] = bytes[i] ^ k ^ mix;
+            }
+        }
+
         let bin = "";
-        for (let i = 0; i < out.length; i++) {
-            bin += String.fromCharCode(out[i]);
+        for (let i = 0; i < bytes.length; i++) {
+            bin += String.fromCharCode(bytes[i]);
         }
         return btoa(bin);
     }
 
-    // Эта функция используется в сгенерированном файле, но оставим её и тут для симметрии
-    function xorDecodeFromBase64(b64, pin) {
-        const bin = atob(b64);
-        const key = pin;
-        const len = bin.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            bytes[i] = bin.charCodeAt(i);
-        }
-        const out = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            const k = key.charCodeAt(i % key.length);
-            out[i] = bytes[i] ^ k;
-        }
-        let text = "";
-        for (let i = 0; i < out.length; i++) {
-            text += String.fromCharCode(out[i]);
-        }
-        return text;
-    }
-
-    // --- Обработчики UI ---
-
-    const pinInput = document.getElementById('pin');
+    const pinInput     = document.getElementById('pin');
+    const pinLengthSel = document.getElementById('pinLength');
     const togglePinBtn = document.getElementById('togglePin');
-    const encodeBtn = document.getElementById('encodeBtn');
-    const resultArea = document.getElementById('resultHtml');
-    const sourceArea = document.getElementById('sourceCode');
-    const copyBtn = document.getElementById('copyBtn');
-    const downloadBtn = document.getElementById('downloadBtn');
+    const encodeBtn    = document.getElementById('encodeBtn');
+    const modeSelect   = document.getElementById('mode');
+    const modeInfo     = document.getElementById('modeInfo');
+    const resultArea   = document.getElementById('resultHtml');
+    const sourceArea   = document.getElementById('sourceCode');
+    const copyBtn      = document.getElementById('copyBtn');
+    const downloadBtn  = document.getElementById('downloadBtn');
+    const pinHashInput = document.getElementById('pinHash');
+    const copyHashBtn  = document.getElementById('copyHashBtn');
 
-    togglePinBtn.addEventListener('click', () => {
-        if (pinInput.type === 'password') {
-            pinInput.type = 'text';
-        } else {
-            pinInput.type = 'password';
+    function updateModeInfo() {
+        const mode = modeSelect.value;
+        if (mode === 'gate') {
+            modeInfo.textContent =
+                '«Калитка» — один проход XOR-обфускации. Максимальная скорость, минимальная защита. Подходит для лёгкого скрытия от новичков.';
+        } else if (mode === 'door') {
+            modeInfo.textContent =
+                '«Дверь» — несколько раундов XOR с перемешиванием. Баланс между скоростью и сложностью, уже сложнее для простого анализа.';
+        } else if (mode === 'safe') {
+            modeInfo.textContent =
+                '«Сейф» — много раундов XOR-обфускации с псевдо-перемешиванием. Расшифровка медленнее, но код сильнее запутан.';
+        }
+    }
+    updateModeInfo();
+    modeSelect.addEventListener('change', updateModeInfo);
+
+    // ограничиваем длину PIN в зависимости от выбранной
+    pinLengthSel.addEventListener('change', function() {
+        const len = parseInt(pinLengthSel.value, 10) || 4;
+        pinInput.maxLength = len;
+        if (pinInput.value.length > len) {
+            pinInput.value = pinInput.value.slice(0, len);
         }
     });
 
-    encodeBtn.addEventListener('click', () => {
+    togglePinBtn.addEventListener('click', function () {
+        pinInput.type = (pinInput.type === 'password') ? 'text' : 'password';
+    });
+
+    encodeBtn.addEventListener('click', function () {
         const source = sourceArea.value;
         const pin = pinInput.value.trim();
+        const mode = modeSelect.value;
+        const pinLen = parseInt(pinLengthSel.value, 10) || 4;
 
         if (!source) {
             alert('Введите исходный HTML/JS код.');
             sourceArea.focus();
             return;
         }
-        if (!/^\d{4}$/.test(pin)) {
-            alert('PIN-код должен состоять ровно из 4 цифр.');
+
+        const pinRegex = new RegExp('^\\d{' + pinLen + '}$');
+        if (!pinRegex.test(pin)) {
+            alert('PIN-код должен состоять ровно из ' + pinLen + ' цифр.');
             pinInput.focus();
             return;
         }
 
-        const encoded = xorEncodeToBase64(source, pin);
+        const MAGIC = '__PIN_OK__';
 
-        // Шаблон итогового HTML-файла
-        const wrapperHtml = `<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8" />
-<title>Защищённая страница</title>
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<style>
-* { box-sizing: border-box; }
-body {
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    margin: 0;
-    padding: 20px;
-    background: #0f172a;
-    color: #e5e7eb;
-}
-.wrapper {
-    max-width: 420px;
-    margin: 60px auto;
-    background: #020617;
-    border-radius: 16px;
-    padding: 24px 20px 26px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
-    border: 1px solid rgba(148, 163, 184, 0.35);
-}
-h1 {
-    font-size: 18px;
-    margin: 0 0 4px;
-}
-.sub {
-    font-size: 13px;
-    color: #9ca3af;
-    margin-bottom: 16px;
-}
-label {
-    font-size: 13px;
-    font-weight: 600;
-    margin-bottom: 6px;
-    display: block;
-}
-.password-wrapper {
-    position: relative;
-}
-.password-wrapper input {
-    width: 100%;
-    padding: 10px 40px 10px 10px;
-    border-radius: 10px;
-    border: 1px solid #4b5563;
-    font-size: 18px;
-    letter-spacing: 0.25em;
-    text-align: center;
-    background: #020617;
-    color: #e5e7eb;
-}
-.password-wrapper button {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    border: none;
-    background: none;
-    cursor: pointer;
-    font-size: 18px;
-    color: #9ca3af;
-}
-button.main {
-    margin-top: 16px;
-    width: 100%;
-    padding: 10px 16px;
-    border-radius: 999px;
-    border: none;
-    background: #22c55e;
-    color: #022c22;
-    font-weight: 700;
-    cursor: pointer;
-    font-size: 14px;
-}
-button.main:disabled {
-    background: #4b5563;
-    color: #9ca3af;
-    cursor: default;
-}
-.hint {
-    font-size: 11px;
-    color: #6b7280;
-    margin-top: 8px;
-}
-</style>
-</head>
-<body>
-<div class="wrapper">
-    <h1>Защищённая страница</h1>
-    <div class="sub">Введите 4-значный PIN для распаковки.</div>
-    <form id="loginForm">
-        <label for="pin">PIN-код</label>
-        <div class="password-wrapper">
-            <input id="pin" type="password" maxlength="4" inputmode="numeric" autocomplete="off" />
-            <button type="button" id="togglePin" title="Показать/скрыть PIN">👁</button>
-        </div>
-        <button class="main" type="submit">🔓 Разблокировать</button>
-        <div class="hint">Страница автоматически запустится после успешной распаковки.</div>
-    </form>
-</div>
+        // шифруем: MAGIC + исходный код
+        const encoded = xorEncodeToBase64(MAGIC + source, pin, mode);
 
-<script>
-(function() {
-    // Закодированные данные
-    const ENCODED_DATA = "${encoded}";
+        // хэш PIN для ссылки: base64(PIN), безопасно для URL
+        const pinHash = encodeURIComponent(btoa(pin));
+        const hashTail = '#k=' + pinHash;
+        pinHashInput.value = hashTail;
+        copyHashBtn.disabled = false;
 
-    function xorDecodeFromBase64(b64, pin) {
-        const bin = atob(b64);
-        const key = pin;
-        const len = bin.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            bytes[i] = bin.charCodeAt(i);
+        // Внутренний скрипт (ASCII-only), который будет в защищённой странице
+        const innerScriptLines = [];
+        innerScriptLines.push('(function(){');
+        innerScriptLines.push('  var ENCODED_DATA = "' + encoded + '";');
+        innerScriptLines.push('  var MAGIC = "__PIN_OK__";');
+        innerScriptLines.push('  var MODE = "' + mode + '";');
+        innerScriptLines.push('  var PIN_LEN = ' + pinLen + ';');
+        innerScriptLines.push('  function xorDecodeFromBase64(b64, pin) {');
+        innerScriptLines.push('    var bin = atob(b64);');
+        innerScriptLines.push('    var len = bin.length;');
+        innerScriptLines.push('    var bytes = new Uint8Array(len);');
+        innerScriptLines.push('    for (var i = 0; i < len; i++) { bytes[i] = bin.charCodeAt(i); }');
+        innerScriptLines.push('    var key = pin || "0";');
+        innerScriptLines.push('    var keyLen = key.length || 1;');
+        innerScriptLines.push('    var rounds;');
+        innerScriptLines.push('    if (MODE === "door") {');
+        innerScriptLines.push('      rounds = 5;');
+        innerScriptLines.push('    } else if (MODE === "safe") {');
+        innerScriptLines.push('      rounds = 12;');
+        innerScriptLines.push('    } else {');
+        innerScriptLines.push('      rounds = 1;');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('    for (var r = 0; r < rounds; r++) {');
+        innerScriptLines.push('      for (var j = 0; j < len; j++) {');
+        innerScriptLines.push('        var k = key.charCodeAt((j + r) % keyLen);');
+        innerScriptLines.push('        var mix = ((j * 31 + r * 17) & 255);');
+        innerScriptLines.push('        bytes[j] = bytes[j] ^ k ^ mix;');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('    if (typeof TextDecoder !== "undefined") {');
+        innerScriptLines.push('      return new TextDecoder("utf-8").decode(bytes);');
+        innerScriptLines.push('    } else {');
+        innerScriptLines.push('      var tmp = "";');
+        innerScriptLines.push('      for (var k2 = 0; k2 < bytes.length; k2++) { tmp += String.fromCharCode(bytes[k2]); }');
+        innerScriptLines.push('      try {');
+        innerScriptLines.push('        return decodeURIComponent(escape(tmp));');
+        innerScriptLines.push('      } catch (e) {');
+        innerScriptLines.push('        return tmp;');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('  }');
+
+        // helper: decode UTF-8 from base64 (keeps script ASCII)
+        innerScriptLines.push('  function decodeUtf8FromB64(b64) {');
+        innerScriptLines.push('    var bin = atob(b64);');
+        innerScriptLines.push('    var len = bin.length;');
+        innerScriptLines.push('    var bytes = new Uint8Array(len);');
+        innerScriptLines.push('    for (var i = 0; i < len; i++) { bytes[i] = bin.charCodeAt(i); }');
+        innerScriptLines.push('    if (typeof TextDecoder !== "undefined") {');
+        innerScriptLines.push('      return new TextDecoder("utf-8").decode(bytes);');
+        innerScriptLines.push('    } else {');
+        innerScriptLines.push('      var tmp = "";');
+        innerScriptLines.push('      for (var j = 0; j < bytes.length; j++) { tmp += String.fromCharCode(bytes[j]); }');
+        innerScriptLines.push('      try {');
+        innerScriptLines.push('        return decodeURIComponent(escape(tmp));');
+        innerScriptLines.push('      } catch (e) {');
+        innerScriptLines.push('        return tmp;');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('  }');
+
+        innerScriptLines.push('  function isValidPin(pin) {');
+        innerScriptLines.push('    if (pin.length !== PIN_LEN) return false;');
+        innerScriptLines.push('    for (var i = 0; i < pin.length; i++) {');
+        innerScriptLines.push('      var c = pin.charAt(i);');
+        innerScriptLines.push('      if (c < "0" || c > "9") return false;');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('    return true;');
+        innerScriptLines.push('  }');
+        innerScriptLines.push('  function getPin(inputs) {');
+        innerScriptLines.push('    var v = "";');
+        innerScriptLines.push('    inputs.forEach(function(el){ v += (el.value || ""); });');
+        innerScriptLines.push('    return v;');
+        innerScriptLines.push('  }');
+        innerScriptLines.push('  function showError(errorEl, inputs, container, msg) {');
+        innerScriptLines.push('    if (msg) { errorEl.textContent = msg; }');
+        innerScriptLines.push('    errorEl.classList.add("visible");');
+        innerScriptLines.push('    inputs.forEach(function(el){ el.classList.add("error"); });');
+        innerScriptLines.push('    container.classList.remove("shake");');
+        innerScriptLines.push('    void container.offsetWidth;');
+        innerScriptLines.push('    container.classList.add("shake");');
+        innerScriptLines.push('  }');
+        innerScriptLines.push('  function clearError(errorEl, inputs) {');
+        innerScriptLines.push('    errorEl.classList.remove("visible");');
+        innerScriptLines.push('    inputs.forEach(function(el){ el.classList.remove("error"); });');
+        innerScriptLines.push('  }');
+        innerScriptLines.push('  function resetInputs(inputs) {');
+        innerScriptLines.push('    inputs.forEach(function(el){ el.value = ""; });');
+        innerScriptLines.push('    if (inputs.length) { inputs[0].focus(); }');
+        innerScriptLines.push('  }');
+        innerScriptLines.push('  function tryUnlockCurrent(inputs, errorEl, loader, container, forcedPin) {');
+        innerScriptLines.push('    var pin = forcedPin != null ? forcedPin : getPin(inputs);');
+        innerScriptLines.push('    if (!isValidPin(pin)) {');
+        innerScriptLines.push('      showError(errorEl, inputs, container, "PIN must be " + PIN_LEN + " digits.");');
+        innerScriptLines.push('      return;');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('    clearError(errorEl, inputs);');
+        innerScriptLines.push('    var loaderTimer = setTimeout(function(){');
+        innerScriptLines.push('      loader.classList.add("visible");');
+        innerScriptLines.push('    }, 250);');
+        innerScriptLines.push('    setTimeout(function(){');
+        innerScriptLines.push('      try {');
+        innerScriptLines.push('        var full = xorDecodeFromBase64(ENCODED_DATA, pin);');
+        innerScriptLines.push('        clearTimeout(loaderTimer);');
+        innerScriptLines.push('        loader.classList.remove("visible");');
+        innerScriptLines.push('        if (full.indexOf(MAGIC) !== 0) {');
+        innerScriptLines.push('          showError(errorEl, inputs, container, decodeUtf8FromB64("0J3QtdCy0LXRgNC90YvQuSBQSU4="));'); // "Неверный PIN"
+        innerScriptLines.push('          resetInputs(inputs);');
+        innerScriptLines.push('          return;');
+        innerScriptLines.push('        }');
+        innerScriptLines.push('        var html = full.slice(MAGIC.length);');
+        innerScriptLines.push('        document.open();');
+        innerScriptLines.push('        document.write(html);');
+        innerScriptLines.push('        document.close();');
+        innerScriptLines.push('      } catch (e) {');
+        innerScriptLines.push('        clearTimeout(loaderTimer);');
+        innerScriptLines.push('        loader.classList.remove("visible");');
+        innerScriptLines.push('        showError(errorEl, inputs, container, "Decryption error.");');
+        innerScriptLines.push('        resetInputs(inputs);');
+        innerScriptLines.push('        console.error(e);');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('    }, 0);');
+        innerScriptLines.push('  }');
+
+        // авторазблокировка по ссылке вида #k=HASH, где HASH = encodeURIComponent(btoa(PIN))
+        innerScriptLines.push('  function autoUnlockFromHash(inputs, errorEl, loader, container) {');
+        innerScriptLines.push('    var hash = window.location.hash || "";');
+        innerScriptLines.push('    if (!hash || hash.indexOf("#k=") !== 0) return;');
+        innerScriptLines.push('    var val = hash.slice(3);');
+        innerScriptLines.push('    try { val = decodeURIComponent(val); } catch(e) {}');
+        innerScriptLines.push('    var pin;');
+        innerScriptLines.push('    try { pin = atob(val); } catch(e) { return; }');
+        innerScriptLines.push('    if (!isValidPin(pin)) return;');
+        innerScriptLines.push('    for (var i = 0; i < inputs.length; i++) {');
+        innerScriptLines.push('      inputs[i].value = pin.charAt(i) || "";');
+        innerScriptLines.push('    }');
+        innerScriptLines.push('    tryUnlockCurrent(inputs, errorEl, loader, container, pin);');
+        innerScriptLines.push('  }');
+
+        innerScriptLines.push('  var inputs = Array.prototype.slice.call(document.querySelectorAll(".pin-input"));');
+        innerScriptLines.push('  var errorEl = document.getElementById("pinError");');
+        innerScriptLines.push('  var loader = document.getElementById("pinLoader");');
+        innerScriptLines.push('  var container = document.querySelector(".pin-container");');
+        innerScriptLines.push('  inputs.forEach(function(input, idx){');
+        innerScriptLines.push('    input.addEventListener("input", function(e){');
+        innerScriptLines.push('      var val = input.value.replace(/\\D/g, "");');
+        innerScriptLines.push('      input.value = val ? val.charAt(val.length - 1) : "";');
+        innerScriptLines.push('      clearError(errorEl, inputs);');
+        innerScriptLines.push('      if (input.value && idx < inputs.length - 1) {');
+        innerScriptLines.push('        inputs[idx+1].focus();');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('      var pinNow = getPin(inputs);');
+        innerScriptLines.push('      if (pinNow.length === inputs.length) {');
+        innerScriptLines.push('        tryUnlockCurrent(inputs, errorEl, loader, container);');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('    });');
+        innerScriptLines.push('    input.addEventListener("keydown", function(e){');
+        innerScriptLines.push('      if (e.key === "Backspace" && !input.value && idx > 0) {');
+        innerScriptLines.push('        inputs[idx-1].focus();');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('      if (e.key === "ArrowLeft" && idx > 0) {');
+        innerScriptLines.push('        e.preventDefault(); inputs[idx-1].focus();');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('      if (e.key === "ArrowRight" && idx < inputs.length - 1) {');
+        innerScriptLines.push('        e.preventDefault(); inputs[idx+1].focus();');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('    });');
+        innerScriptLines.push('    input.addEventListener("paste", function(e){');
+        innerScriptLines.push('      e.preventDefault();');
+        innerScriptLines.push('      var text = (e.clipboardData || window.clipboardData).getData("text") || "";');
+        innerScriptLines.push('      text = text.replace(/\\D/g, "").slice(0, inputs.length);');
+        innerScriptLines.push('      if (!text) return;');
+        innerScriptLines.push('      for (var n=0; n<inputs.length; n++) {');
+        innerScriptLines.push('        inputs[n].value = text.charAt(n) || "";');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('      var pinNow2 = getPin(inputs);');
+        innerScriptLines.push('      if (pinNow2.length === inputs.length) {');
+        innerScriptLines.push('        tryUnlockCurrent(inputs, errorEl, loader, container);');
+        innerScriptLines.push('      }');
+        innerScriptLines.push('    });');
+        innerScriptLines.push('  });');
+        innerScriptLines.push('  if (inputs.length) { inputs[0].focus(); }');
+        innerScriptLines.push('  autoUnlockFromHash(inputs, errorEl, loader, container);');
+        innerScriptLines.push('})();');
+
+        const innerScript    = innerScriptLines.join('\n');
+        const innerScriptB64 = btoa(innerScript); // ASCII-only → OK
+
+        // HTML защищённой страницы с минималистичным PIN-экраном
+        const htmlLines = [];
+        htmlLines.push('<!DOCTYPE html>');
+        htmlLines.push('<html lang="ru">');
+        htmlLines.push('<head>');
+        htmlLines.push('<meta charset="UTF-8" />');
+        htmlLines.push('<title>Защищённая страница</title>');
+        htmlLines.push('<meta name="viewport" content="width=device-width, initial-scale=1" />');
+        htmlLines.push('<style>');
+        htmlLines.push('*{box-sizing:border-box;margin:0;padding:0;}');
+        htmlLines.push('body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:#020617;color:#e5e7eb;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}');
+        htmlLines.push('.pin-container{width:100%;max-width:320px;padding:24px 20px;border-radius:18px;background:rgba(15,23,42,0.96);box-shadow:0 24px 60px rgba(0,0,0,0.75);border:1px solid rgba(148,163,184,0.35);}');
+        htmlLines.push('.pin-title{font-size:18px;font-weight:600;margin-bottom:4px;text-align:center;}');
+        htmlLines.push('.pin-subtitle{font-size:13px;color:#9ca3af;text-align:center;margin-bottom:18px;}');
+        htmlLines.push('.pin-inputs{display:flex;justify-content:center;gap:8px;margin-bottom:8px;}');
+        htmlLines.push('.pin-input{border-radius:12px;border:1px solid #4b5563;background:#020617;color:#e5e7eb;font-weight:600;text-align:center;}');
+        htmlLines.push('.pin-input:focus{outline:none;border-color:#60a5fa;box-shadow:0 0 0 1px rgba(37,99,235,0.6);}');
+        htmlLines.push('.pin-input.error{border-color:#ef4444;background:rgba(127,29,29,0.45);}');
+        htmlLines.push('.pin-error{font-size:12px;color:#f97373;text-align:center;min-height:16px;opacity:0;transform:translateY(4px);transition:all 0.18s ease-out;}');
+        htmlLines.push('.pin-error.visible{opacity:1;transform:translateY(0);}');
+        htmlLines.push('.pin-loader-overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.85);opacity:0;pointer-events:none;transition:opacity 0.2s ease-out;}');
+        htmlLines.push('.pin-loader-overlay.visible{opacity:1;pointer-events:auto;}');
+        htmlLines.push('.pin-spinner{width:40px;height:40px;border-radius:999px;border:3px solid rgba(148,163,184,0.4);border-top-color:#22c55e;animation:spin 0.8s linear infinite;}');
+        htmlLines.push('.pin-loader-text{margin-top:10px;font-size:13px;color:#e5e7eb;text-align:center;}');
+        htmlLines.push('.shake{animation:shake 0.35s ease;}');
+        htmlLines.push('@keyframes spin{to{transform:rotate(360deg);}}');
+        htmlLines.push('@keyframes shake{0%{transform:translateX(0);}20%{transform:translateX(-4px);}40%{transform:translateX(4px);}60%{transform:translateX(-3px);}80%{transform:translateX(3px);}100%{transform:translateX(0);}}');
+        /* адаптивные размеры под длину PIN */
+        htmlLines.push('.pin-container.pin-len-4 .pin-input{width:48px;height:48px;font-size:24px;}');
+        htmlLines.push('.pin-container.pin-len-6 .pin-input{width:40px;height:48px;font-size:22px;}');
+        htmlLines.push('.pin-container.pin-len-8 .pin-input{width:32px;height:46px;font-size:20px;}');
+        htmlLines.push('</style>');
+        htmlLines.push('</head>');
+        htmlLines.push('<body>');
+        htmlLines.push('<div class="pin-container pin-len-' + pinLen + '">');
+        htmlLines.push('<div class="pin-title">Введите PIN</div>');
+        htmlLines.push('<div class="pin-subtitle">' + pinLen + '-значный код доступа</div>');
+        htmlLines.push('<div class="pin-inputs">');
+        for (let i = 0; i < pinLen; i++) {
+            htmlLines.push('<input class="pin-input" type="password" inputmode="numeric" maxlength="1" autocomplete="one-time-code" />');
         }
-        const out = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-            const k = key.charCodeAt(i % key.length);
-            out[i] = bytes[i] ^ k;
-        }
-        let text = "";
-        for (let i = 0; i < out.length; i++) {
-            text += String.fromCharCode(out[i]);
-        }
-        return text;
-    }
+        htmlLines.push('</div>');
+        htmlLines.push('<div id="pinError" class="pin-error">Неверный PIN</div>');
+        htmlLines.push('</div>');
+        htmlLines.push('<div id="pinLoader" class="pin-loader-overlay">');
+        htmlLines.push('<div>');
+        htmlLines.push('<div class="pin-spinner"></div>');
+        htmlLines.push('<div class="pin-loader-text">Загрузка…</div>');
+        htmlLines.push('</div>');
+        htmlLines.push('</div>');
+        htmlLines.push('<scr' + 'ipt>eval(atob("' + innerScriptB64 + '"))</scr' + 'ipt>');
+        htmlLines.push('</body>');
+        htmlLines.push('</html>');
 
-    function tryUnlock(pin) {
-        if (!/^\\d{4}$/.test(pin)) {
-            alert("PIN-код должен состоять из 4 цифр.");
-            return;
-        }
-        try {
-            const html = xorDecodeFromBase64(ENCODED_DATA, pin);
-            // Перезаписываем текущий документ распакованным HTML
-            document.open();
-            document.write(html);
-            document.close();
-        } catch (e) {
-            alert("Ошибка распаковки. Возможно, неверный PIN.");
-            console.error(e);
-        }
-    }
+        const protectedHtml = htmlLines.join('\n');
 
-    const form = document.getElementById("loginForm");
-    const pinInput = document.getElementById("pin");
-    const togglePinBtn = document.getElementById("togglePin");
-
-    togglePinBtn.addEventListener("click", function() {
-        if (pinInput.type === "password") {
-            pinInput.type = "text";
-        } else {
-            pinInput.type = "password";
-        }
-    });
-
-    form.addEventListener("submit", function(e) {
-        e.preventDefault();
-        tryUnlock(pinInput.value.trim());
-    });
-
-    pinInput.addEventListener("input", function() {
-        const val = pinInput.value.trim();
-        // Автоматический запуск после ввода 4 цифр
-        if (val.length === 4) {
-            tryUnlock(val);
-        }
-    });
-
-    pinInput.focus();
-})();
-</script>
-</body>
-</html>`;
-
-        resultArea.value = wrapperHtml;
+        resultArea.value = protectedHtml;
         copyBtn.disabled = false;
         downloadBtn.disabled = false;
     });
 
-    copyBtn.addEventListener('click', async () => {
+    copyBtn.addEventListener('click', async function () {
         if (!resultArea.value) return;
         try {
             await navigator.clipboard.writeText(resultArea.value);
             copyBtn.textContent = '✅ Скопировано';
-            setTimeout(() => { copyBtn.textContent = '📋 Копировать в буфер'; }, 1200);
+            setTimeout(function () {
+                copyBtn.textContent = '📋 Копировать HTML';
+            }, 1200);
         } catch (e) {
             alert('Не удалось скопировать в буфер обмена: ' + e.message);
         }
     });
 
-    downloadBtn.addEventListener('click', () => {
+    copyHashBtn.addEventListener('click', async function () {
+        if (!pinHashInput.value) return;
+        try {
+            await navigator.clipboard.writeText(pinHashInput.value);
+            copyHashBtn.textContent = '✅ Скопировано';
+            setTimeout(function () {
+                copyHashBtn.textContent = '🔗 Копировать хвост #k=...';
+            }, 1200);
+        } catch (e) {
+            alert('Не удалось скопировать хэш: ' + e.message);
+        }
+    });
+
+    downloadBtn.addEventListener('click', function () {
         if (!resultArea.value) return;
         const blob = new Blob([resultArea.value], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -462,8 +634,11 @@ button.main:disabled {
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setTimeout(function () {
+            URL.revokeObjectURL(url);
+        }, 1000);
     });
+})();
 </script>
 </body>
 </html>
